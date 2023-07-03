@@ -314,3 +314,62 @@ Avoid_confoundig<-function(S,Z,Y,X,
   Out=list(est=est,SATE=SATE,CATE=CATE)
   return(Out)
 }
+transport_compare <-
+  function(z=parent.frame()$Z,
+           y=parent.frame()$Y,
+           site=parent.frame()$S ,
+           w=parent.frame()$X,
+           lib=c("SL.glm","SL.glm.interaction","SL.gam")) {
+    datw <- w
+    n.dat <- nrow(w)
+
+    # Calculate components of clever covariate
+    cps_sl<-mcSuperLearner(Y=site,X=data.frame(w),
+                           family=binomial(),
+                           SL.library =lib)
+
+    cps=cps_sl$SL.predict
+
+
+    ### Z~1
+    nzmodel="z~1"
+    glm_cpz = glm(formula = nzmodel, data = data.frame(cbind( z = z, datw)),
+                  family = "binomial")
+    cpz <- predict(glm_cpz, type = "response")
+
+    # Calculate clever covariate.
+    g0w <- ((1 - cpz) * cps) / (1 - cps)
+    g1w <- (cpz * cps) / (1 - cps)
+    h0w <- ((1 - z) * I(site == 1)) / g0w
+    h1w <- (z * I(site == 1)) / g1w
+
+    y_Z_0<-mcSuperLearner(Y=y[site==1],X=data.frame(w=w,z=z)[site==1,],
+                          family=binomial(),
+                          SL.library = lib)
+
+    fit_0<-predict.SuperLearner(y_Z_0, newdata = mutate(data.frame(w=w,z=z),z=0),type="response")$pred
+
+    fit_1<-predict.SuperLearner(y_Z_0, newdata = mutate(data.frame(w=w,z=z),z=1),type="response")$pred
+    fit_y<-predict.SuperLearner(y_Z_0, newdata =data.frame(w=w,z=z),type="response")$pred
+
+    q <- cbind(fit_y,fit_0,fit_1)
+
+
+    epsilon <- coef(glm(y ~ -1 + offset(q[, 1]) + h0w + h1w, family = "binomial",
+                        subset = site == 1))
+    # Update initial prediction.
+    q1 <- q + c((epsilon[1] * h0w + epsilon[2] * h1w),
+                epsilon[1] / g0w, epsilon[2] / g1w)
+
+    # Get efficient influence curve values for everyone
+    tmleest <- mean(plogis(q1[, 3][site == 0])) - mean(plogis(q1[, 2][site == 0]))
+    ps0 <- mean(I(site == 0))
+    eic <- (((z * h1w / ps0) - ((1 - z) * h0w / ps0)) * (y - plogis(q[, 1]))) +
+      (I(site == 0) / ps0 * plogis(q1[, 3])) - (I(site == 0) / ps0 * plogis(q1[, 2]))- (tmleest / ps0)
+
+    results = list("est" = tmleest,
+                   "var" = var(eic) / n.dat,
+                   "eic" = eic[site == 0])
+    return(results)
+  }
+
